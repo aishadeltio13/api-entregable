@@ -57,7 +57,7 @@ def buscar_emoji(tipo):
     
     
 def iniciar_bot():
-    print("--- Mirando si hay actividades nuevas (Modo: {MODO}) ---")
+    print(f"--- Mirando si hay actividades nuevas (Modo: {MODO}) ---")
 
     cuantas = 4  # dudo que suba mas de 4 actividades en tres horas
     
