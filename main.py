@@ -1,7 +1,7 @@
 import os
 import time
 import json
-from mastodon import Mastodon
+from mastodon import Mastodon, MastodonAPIError
 from stravalib.client import Client
 
 # --- MIS VARIABLES ---
@@ -10,8 +10,25 @@ STRAVA_SECRET = os.getenv('SECRETO_CLIENTE')
 STRAVA_REFRESH = os.getenv('S_TOKEN_ACTUALIZACION')
 MASTODON_TOKEN = os.getenv('M_TOKEN_ACCESO')
 MASTODON_URL = os.getenv('MASTODON_API') 
+MODO = os.getenv('ENTORNO')
 
-ARCHIVO = '/data/history.json'
+ARCHIVO = '/data/history.json' # guardamos el ID de cada actividad para no repetir la publicación.
+ARCHIVO_LOGS = '/data/posts_simulados.txt' # guardamos las pruebas de desarrollo
+
+# --- VALIDACIONES DEL MENSAJE ---
+def validar_mensaje(mensaje):
+    # 1. Comprobar si está vacío o son solo espacios
+    if not mensaje or mensaje.strip() == "":
+        print("Error: El mensaje estaba vacío.")
+        return False
+    
+    # 2. Comprobar longitud (Mastodon suele deja 500) 
+    limite = 500
+    if len(mensaje) > limite:
+        print(f"Error: El mensaje es muy largo ({len(mensaje)} caracteres).")
+        return False
+        
+    return True
 
 def conectar_strava():
     try:
@@ -27,38 +44,24 @@ def conectar_strava():
         print("Fallo al conectar con Strava")
         return None
 
-
 def buscar_emoji(tipo):
-    # Convierto a texto por si acaso
-    actividad = str(tipo)
-    
-    # 1. Correr
+    actividad = str(tipo) # convierto a texto por si acaso
     if "Run" in actividad: return "🏃‍♀️"
-    
-    # 2. Bici 
     elif "Ride" in actividad or "Bike" in actividad: return "🚴‍♀️"
-    
-    # 3. Nadar
     elif "Swim" in actividad: return "🏊‍♀️"
-    
-    # 4. Andar
     elif "Walk" in actividad: return "🚶‍♀️"
     elif "Hike" in actividad: return "🥾"
-    
-    # 5. GIMNASIO Y FUERZA
-    elif "Weight" in actividad or "Workout" in actividad or "Crossfit" in actividad: 
-        return "🏋️‍♀️"
-    
-    # 6. Yoga
+    elif "Weight" in actividad or "Workout" in actividad or "Crossfit" in actividad: return "🏋️‍♀️"
     elif "Yoga" in actividad: return "🧘‍♀️"
-    
-    # Emoji por defecto si no sé qué es
     else: return "🏅"
-
+    
+    
 def iniciar_bot():
-    print("--- Mirando si hay cosas nuevas ---")
+    print("--- Mirando si hay actividades nuevas (Modo: {MODO}) ---")
 
-    cuantas = 5
+    cuantas = 4  # dudo que suba mas de 4 actividades en tres horas
+    
+    # Si no hay historial, bajo y publico todo.
     if not os.path.exists(ARCHIVO):
         print("Primera vez: Voy a bajar las ultimas 40")
         cuantas = 40
@@ -66,8 +69,11 @@ def iniciar_bot():
     # 1. Conexiones
     cliente_strava = conectar_strava()
     if not cliente_strava: return
-
-    mastodon = Mastodon(access_token=MASTODON_TOKEN, api_base_url=MASTODON_URL)
+    
+    # Solo conectamos Mastodon si estamos en PRODUCCION 
+    mastodon = None
+    if MODO == 'PRODUCCION':
+        mastodon = Mastodon(access_token=MASTODON_TOKEN, api_base_url=MASTODON_URL)
 
     # 2. Bajo la lista
     try:
@@ -84,7 +90,7 @@ def iniciar_bot():
 
     nuevas_subidas = list(subidas)
     
-    lista.reverse()
+    lista.reverse() # aqui hay que darlo la vuelta que sino me lo leía del revés
 
     for resumen in lista:
         if resumen.id in subidas:
@@ -92,7 +98,7 @@ def iniciar_bot():
             
         print("Procesando: " + resumen.name)
 
-        # Descripción completa: diferencia entre resumen y descripcion 
+        # Descripción completa
         try:
             actividad = cliente_strava.get_activity(resumen.id)
         except:
@@ -104,26 +110,55 @@ def iniciar_bot():
         desc = actividad.description if actividad.description else ""
         
         mensaje = f"{emoji} {nombre_tipo}\n📝 {actividad.name}\n\n{desc}"
-
-        # Recorte: Mastodon solo permite 500 caracteres y yo a veces pongo mucha cosa :)
-        if len(mensaje) > 495:
-            mensaje = mensaje[:490] + "..."
-
-        try:
-            mastodon.status_post(mensaje)
-            print("Subido a Mastodon")
+        
+        # --- VALIDACIÓN ANTES DE ENVIAR ---
+        if not validar_mensaje(mensaje):
+            print("Salto esta actividad porque no pasó la validación.")
+            continue
+        
+        # --- LÓGICA DESARROLLO ---
+        if MODO == 'DESARROLLO':
+            print("[TEST] No se publica. Guardando en archivo local...")
+            
+            # Guardamos en un fichero de texto para ver cómo queda
+            f_log = open(ARCHIVO_LOGS, 'a')
+            fecha = time.strftime("%Y-%m-%d %H:%M:%S")
+            f_log.write(f"--- {fecha} ---\n{mensaje}\n-------------------\n")
+            f_log.close()
+            
+            # Simulamos que se ha subido para guardarlo en historial
             nuevas_subidas.append(actividad.id)
-            time.sleep(10)
-        except Exception as e:
-            print("Error subiendo: " + str(e))
+            time.sleep(1)
 
-    # Guardar
+        else:
+            # MODO PRODUCCION
+            try:
+                mastodon.status_post(mensaje)
+                print("ÉXITO: Publicado en Mastodon")
+                nuevas_subidas.append(actividad.id)
+                time.sleep(10)
+
+            # --- MANEJAR ERRORES DE MASTODON ---
+            except MastodonAPIError as e:
+                error_str = str(e)
+                if "429" in error_str:
+                    print("Mastodon dice que paremos (Rate Limit 429).")
+                    time.sleep(300) # Espera 5 minutos extra
+                elif "500" in error_str or "503" in error_str:
+                    print("Servidor Mastodon caído (500/503). Intento luego.")
+                else:
+                    print(f"Error desconocido al publicar: {e}")
+                    
+            except Exception as e:
+                print(f"❌ Error genérico: {e}")
+
+    # Guardar historial
     f = open(ARCHIVO, 'w')
     json.dump(nuevas_subidas[-100:], f)
     f.close()
 
 if __name__ == "__main__":
-    print("Bot arrancado.")
+    print(f"Bot AISHA arrancado en entorno: {MODO}")
     while True:
         iniciar_bot()
-        time.sleep(900)
+        time.sleep(10800) # 3 Horas
