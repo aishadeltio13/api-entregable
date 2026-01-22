@@ -53,3 +53,29 @@ def create_draft(draft: Draft):
     data.append(draft.dict())
     save_db(data)
     return draft
+
+@app.put("/drafts/{draft_id}", response_model=Draft)
+def update_draft(draft_id: int, updated_content: Draft):
+    data = load_db()
+    for i, d in enumerate(data):
+        if d["id"] == draft_id:
+            # Truco: se mantiene el id original pero se cambia lo que hayamos cambiado
+            updated_content.id = draft_id
+            data[i] = updated_content.dict()
+            save_db(data)
+            return updated_content
+    
+    # Si no encontramos el id (error 404)
+    raise HTTPException(status_code=404, detail="Borrador no encontrado")
+
+
+@app.delete("/drafts/{draft_id}")
+def delete_draft(draft_id: int):
+    data = load_db()
+    # Nueva lista sin el elemento que queremos borrar
+    nueva_lista = [d for d in data if d["id"] != draft_id]
+    # Si la lista mide lo mismo, es que no hemos borrado nada y no se encontró el id
+    if len(nueva_lista) == len(data):
+        raise HTTPException(status_code=404, detail="No se pudo eliminar: ID no encontrado")
+    save_db(nueva_lista)
+    return {"mensaje": f"Borrador {draft_id} eliminado correctamente"}
