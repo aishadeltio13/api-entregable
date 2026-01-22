@@ -12,14 +12,31 @@ security = HTTPBasic()
 
 DB_PATH = "/data/drafts.json"
 
-# 2. Modelo
+# 2. Seguridad API
+API_USER = os.getenv("API_USER")
+API_PASS = os.getenv("API_PASS")
+
+def auth(credentials: HTTPBasicCredentials = Depends(security)):
+    # Verificar si el usuario y la contraseña coinciden
+    is_user_ok = secrets.compare_digest(credentials.username, API_USER)
+    is_pass_ok = secrets.compare_digest(credentials.password, API_PASS)
+    if not (is_user_ok and is_pass_ok):
+        # Si fallan, lanzamos un error 401 (No autorizado)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Usuario o contraseña incorrectos",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return credentials.username
+
+# 3. Modelo
 class Draft(BaseModel):
     id: Optional[int] = None
     title: str
     content: str
     status: str = "draft"
     
-# 3. Funciones base de datos
+# 4. Funciones base de datos
 def load_db():
     if not os.path.exists(DB_PATH):
         return []
@@ -36,17 +53,17 @@ def save_db(data):
     with open(DB_PATH, "w") as f:
         json.dump(data, f, indent=4)
 
-# 4. Endpoint
+# 5. Endpoint
 @app.get("/")
 def read_root():
     return {"mensaje": "Servidor de Aisha funcionando"}
 
-@app.get("/drafts", response_model=List[Draft])
+@app.get("/drafts", response_model=List[Draft], dependencies=[Depends(auth)])
 def list_drafts(skip: int = 0, limit: int = 10):
     data = load_db()
     return data[skip : skip + limit] # esto es para la paginacion (ahora tenemos pocos entrenamientos, pero en un futuro tendremos muchos y será necesario)
 
-@app.post("/drafts", status_code=201)
+@app.post("/drafts", status_code=201, dependencies=[Depends(auth)])
 def create_draft(draft: Draft):
     data = load_db()
     draft.id = int(time.time())
@@ -54,7 +71,7 @@ def create_draft(draft: Draft):
     save_db(data)
     return draft
 
-@app.put("/drafts/{draft_id}", response_model=Draft)
+@app.put("/drafts/{draft_id}", response_model=Draft, dependencies=[Depends(auth)])
 def update_draft(draft_id: int, updated_content: Draft):
     data = load_db()
     for i, d in enumerate(data):
@@ -69,7 +86,7 @@ def update_draft(draft_id: int, updated_content: Draft):
     raise HTTPException(status_code=404, detail="Borrador no encontrado")
 
 
-@app.delete("/drafts/{draft_id}")
+@app.delete("/drafts/{draft_id}", dependencies=[Depends(auth)])
 def delete_draft(draft_id: int):
     data = load_db()
     # Nueva lista sin el elemento que queremos borrar
