@@ -5,9 +5,10 @@ from typing import List, Optional
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
+from mastodon import Mastodon
 
 # 1. Iniciar API
-app = FastAPI(title="Aisha Strava API - Paso 1")
+app = FastAPI(title="Aisha API ")
 security = HTTPBasic()
 
 DB_PATH = "/data/drafts.json"
@@ -36,7 +37,7 @@ class Draft(BaseModel):
     content: str
     status: str = "draft"
     
-# 4. Funciones base de datos
+# 4. Funciones base de datos y funcion auxiliar para ayudar a buscar ids
 def load_db():
     if not os.path.exists(DB_PATH):
         return []
@@ -52,6 +53,9 @@ def save_db(data):
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     with open(DB_PATH, "w") as f:
         json.dump(data, f, indent=4)
+        
+def get_draft(data, draft_id):
+    return next((d for d in data if d["id"] == draft_id), None)
 
 # 5. Endpoint
 @app.get("/")
@@ -96,3 +100,47 @@ def delete_draft(draft_id: int):
         raise HTTPException(status_code=404, detail="No se pudo eliminar: ID no encontrado")
     save_db(nueva_lista)
     return {"mensaje": f"Borrador {draft_id} eliminado correctamente"}
+
+
+@app.post("/drafts/{draft_id}/publish", dependencies=[Depends(auth)])
+def publish_draft(draft_id: int):
+    data = load_db()
+    draft = get_draft(data, draft_id)
+    
+    # 1. Buscar el borrador
+    if not draft:
+        raise HTTPException(status_code=404, detail="Borrador no encontrado")
+    
+    # 2. Mirar si ya ha sido publicado
+    if draft.get("status") == "published":
+        return {"mensaje": "Este borrador ya se publicó anteriormente"}
+
+    # 3. Conectarse con Mastodon
+    m = Mastodon(
+        access_token=os.getenv("M_TOKEN_ACCESO"),
+        api_base_url=os.getenv("MASTODON_API")
+    )
+
+    # 4. Mensaje 
+    texto_final = f"📝 {draft['title']}\n\n{draft['content']}"
+
+    try:
+        # 5. Post
+        m.status_post(texto_final)
+
+        # 6. Actualizar el estado local a 'published'
+        for d in data:
+            if d["id"] == draft_id:
+                d["status"] = "published"
+        
+        save_db(data)
+        
+        return {
+            "mensaje": "Publicado con éxito en Mastodon",
+            "id_borrador": draft_id,
+            "nuevo_estado": "published"
+        }
+
+    except Exception as e:
+        # Si algo falla (red, token inválido...), avisamos 
+        raise HTTPException(status_code=500, detail=f"Error al conectar con Mastodon: {str(e)}")
